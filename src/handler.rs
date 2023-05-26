@@ -7,7 +7,7 @@ use axum::http::{HeaderName, HeaderValue};
 use axum::response::{AppendHeaders, IntoResponse};
 use axum::{debug_handler, Json};
 use axum_extra::extract::cookie::Cookie;
-use axum_extra::extract::CookieJar;
+use axum_extra::extract::{CookieJar};
 use chrono::Utc;
 use hyper::header::LOCATION;
 use hyper::StatusCode;
@@ -240,52 +240,68 @@ pub async fn google_oauth_handler(
     }
 }
 
-pub async fn logout_handler(jar: CookieJar) -> impl IntoResponse {
+pub async fn logout_handler(
+    jar: CookieJar
+) -> impl IntoResponse {
+    let cookie = Cookie::build("token", "")
+        .path("/")
+        .finish();
     (
         StatusCode::OK,
-        jar.remove(Cookie::named("token")),
+        jar.remove(cookie),
         Json(json!({"status": "success"})),
-    )
+    ).into_response()
 }
 
 pub async fn get_me_handler(State(state): State<AppState>, jar: CookieJar) -> impl IntoResponse {
     let vec = state.db.lock().await;
-    let token = jar.get("token").unwrap().value().to_owned();
-    let jwt_secret = state.env.jwt_secret.to_owned();
-    let token_data = decode::<TokenClaims>(
-        &token,
-        &DecodingKey::from_secret(jwt_secret.as_ref()),
-        &Validation::default(),
-    );
+    let token = jar.get("token");
 
-    match token_data {
-        Ok(token_data) => {
-            let user = vec
-                .iter()
-                .find(|user| user.id == Some(token_data.claims.sub.to_owned()));
+    match token {
+        Some(token) => {
+            let token = token.value().to_owned();
+            let jwt_secret = state.env.jwt_secret.to_owned();
+            let token_data = decode::<TokenClaims>(
+                &token,
+                &DecodingKey::from_secret(jwt_secret.as_ref()),
+                &Validation::default(),
+            );
 
-            if user.is_none() {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(json!({"status": "fail", "message": "User not found"})),
-                );
-            }
+            match token_data {
+                Ok(token_data) => {
+                    let user = vec
+                        .iter()
+                        .find(|user| user.id == Some(token_data.claims.sub.to_owned()));
 
-            let user = user.unwrap();
+                    if user.is_none() {
+                        return (
+                            StatusCode::NOT_FOUND,
+                            Json(json!({"status": "fail", "message": "User not found"})),
+                        );
+                    }
 
-            (
-                StatusCode::OK,
-                Json(json!({
+                    let user = user.unwrap();
+
+                    (
+                        StatusCode::OK,
+                        Json(json!({
                     "status": "success",
                     "data": {
                         "user": user_to_response(user)
                     }
                 })),
-            )
+                    )
+                }
+                Err(_) => (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({"status": "fail", "message": "Invalid token"})),
+                ),
+            }
+        },
+        None => {
+            (StatusCode::UNAUTHORIZED, Json(json!({"status": "login required"})))
         }
-        Err(_) => (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({"status": "fail", "message": "Invalid token"})),
-        ),
     }
+
+
 }
